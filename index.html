@@ -364,6 +364,8 @@ html, body { margin: 0; padding: 0; }
 .gc-retrib-voce .lv { font-size: 12px; color: var(--pino); }
 .gc-retrib-voce .nota { font-size: 12.5px; color: var(--grigio); }
 .gc-retrib-form { border: 1px solid var(--linea); border-radius: 10px; padding: 14px; margin-top: 12px; background: var(--carta); }
+.gc-invio-ok { background: var(--pino) !important; border-color: var(--pino) !important; color: #fff !important; }
+.gc-invio-ko { background: #FBEEEB !important; border-color: var(--mattone) !important; color: var(--mattone) !important; }
 /* riposo lavorato (straordinario da pagare) */
 .gc-riposolav-tag { display: inline-flex; align-items: center; background: var(--mattone); color: #fff; font-family: var(--dati); font-size: 10px; text-transform: uppercase; letter-spacing: 0.03em; padding: 2px 8px; border-radius: 999px; margin-left: 8px; white-space: nowrap; }
 .gc-riposolav-banner { display: flex; align-items: flex-start; gap: 10px; background: #FBEEEB; border: 1px solid #E3B7AC; border-left: 4px solid var(--mattone); border-radius: 10px; padding: 12px 14px; margin-bottom: 16px; font-size: 14px; color: var(--mattone); }
@@ -1168,6 +1170,8 @@ button.gc-giorno:focus-visible { outline: 2px solid var(--pino); outline-offset:
       window.__db = firebase.database();
     }
   } catch (e) { console.warn("Firebase non inizializzato:", e); }
+  /* URL del Web App di Google Apps Script per l'invio email (finisce in /exec) */
+  window.__EMAIL_URL = "https://script.google.com/macros/s/AKfycbzW86--ZL4GkqwvZI1sqt_VdD4IK4GSrFvqxNevbYzF/exec";
 </script>
 
 <script>/* React 18.2.0 — incorporato nel file, nessuna dipendenza da internet */
@@ -6119,6 +6123,86 @@ const mailtoProposta = (c, azienda) => {
   } = propostaEmail(c, azienda);
   return "mailto:" + encodeURIComponent(c.email || "") + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
 };
+
+/* ---------- invio email via Google Apps Script (fallback: mailto) ---------- */
+const urlEmail = () => typeof window.__EMAIL_URL === "string" ? window.__EMAIL_URL : "";
+const emailAttiva = () => {
+  const u = urlEmail();
+  return !!u && u.indexOf("INCOLLA") === -1;
+};
+const testoAHtml = t => '<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;white-space:pre-wrap">' + String(t == null ? "" : t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + "</div>";
+async function inviaEmail(payload) {
+  const {
+    _mailto,
+    ...corpo
+  } = payload || {};
+  if (!emailAttiva()) {
+    if (_mailto) {
+      window.location.href = _mailto;
+      return {
+        fallback: true
+      };
+    }
+    throw new Error("Servizio email non configurato");
+  }
+  if (typeof fetch !== "function") {
+    if (_mailto) {
+      window.location.href = _mailto;
+      return {
+        fallback: true
+      };
+    }
+    throw new Error("fetch non disponibile");
+  }
+  await fetch(urlEmail(), {
+    method: "POST",
+    mode: "no-cors",
+    headers: {
+      "Content-Type": "text/plain;charset=utf-8"
+    },
+    body: JSON.stringify(corpo)
+  });
+  return {
+    inviata: true
+  };
+}
+function BottoneInvio({
+  etichetta,
+  className,
+  disabled,
+  titolo,
+  prepara
+}) {
+  const [stato, setStato] = useState("idle");
+  const invia = async () => {
+    if (disabled || stato === "invio") return;
+    let payload;
+    try {
+      payload = prepara();
+    } catch (e) {
+      payload = null;
+    }
+    if (!payload) return;
+    setStato("invio");
+    try {
+      const r = await inviaEmail(payload);
+      setStato(r && r.fallback ? "idle" : "ok");
+      if (!r || !r.fallback) setTimeout(() => setStato("idle"), 4000);
+    } catch (e) {
+      setStato("errore");
+      setTimeout(() => setStato("idle"), 5000);
+    }
+  };
+  const testo = stato === "invio" ? "Invio in corso…" : stato === "ok" ? "Inviata ✓" : stato === "errore" ? "Errore invio" : etichetta;
+  return /*#__PURE__*/React.createElement("button", {
+    className: (className || "gc-btn") + (stato === "ok" ? " gc-invio-ok" : stato === "errore" ? " gc-invio-ko" : ""),
+    disabled: disabled || stato === "invio",
+    title: titolo || (emailAttiva() ? "" : "Verrà aperto il programma di posta finché non colleghi lo script email"),
+    onClick: invia
+  }, /*#__PURE__*/React.createElement(Send, {
+    size: 15
+  }), " ", testo);
+}
 function offerteAperte(azienda) {
   const op = azienda.operativo || {};
   const nomi = new Set();
@@ -6268,12 +6352,18 @@ function ListaCollaboratori({
       className: "n"
     }, nomeCompleto(c)), /*#__PURE__*/React.createElement("div", {
       className: "m"
-    }, c.candidatura.mansioneDesiderata || "—", az ? " · " + az.ragioneSociale : "", " · ", c.email)), /*#__PURE__*/React.createElement("a", {
-      className: "gc-btn",
-      href: mailtoProposta(c, az)
-    }, /*#__PURE__*/React.createElement(Send, {
-      size: 15
-    }), " Invia proposta"));
+    }, c.candidatura.mansioneDesiderata || "—", az ? " · " + az.ragioneSociale : "", " · ", c.email)), /*#__PURE__*/React.createElement(BottoneInvio, {
+      etichetta: "Invia proposta",
+      prepara: () => {
+        const e = propostaEmail(c, az);
+        return {
+          to: c.email || "",
+          subject: e.subject,
+          html: testoAHtml(e.body),
+          _mailto: mailtoProposta(c, az)
+        };
+      }
+    }));
   })), esclusiProposta.length > 0 && /*#__PURE__*/React.createElement("div", {
     className: "gc-proposte-esclusi"
   }, /*#__PURE__*/React.createElement("div", {
@@ -6366,12 +6456,20 @@ function ListaCollaboratori({
     }
   }, /*#__PURE__*/React.createElement(FileText, {
     size: 15
-  }), " Copia testo"), /*#__PURE__*/React.createElement("a", {
-    className: "gc-btn",
-    href: mailtoOfferte(offerteMail, collaboratori.filter(c => destinatari.includes(c.id)).map(c => c.email))
-  }, /*#__PURE__*/React.createElement(Send, {
-    size: 15
-  }), " Invia via email", destinatari.length ? " (" + destinatari.length + " in CCN)" : ""))))), collaboratori.length === 0 ? /*#__PURE__*/React.createElement("div", {
+  }), " Copia testo"), /*#__PURE__*/React.createElement(BottoneInvio, {
+    etichetta: "Invia via email" + (destinatari.length ? " (" + destinatari.length + " in CCN)" : ""),
+    prepara: () => {
+      const emails = collaboratori.filter(c => destinatari.includes(c.id)).map(c => c.email);
+      const az = aziende.find(a => a.contatti && a.contatti.email);
+      return {
+        to: az && az.contatti.email || emails[0] || "",
+        bcc: emails.join(","),
+        subject: "Offerte di lavoro · Stellenangebote · Job openings",
+        html: testoAHtml(offerteMail),
+        _mailto: mailtoOfferte(offerteMail, emails)
+      };
+    }
+  }))))), collaboratori.length === 0 ? /*#__PURE__*/React.createElement("div", {
     className: "gc-vuoto gc-vista"
   }, /*#__PURE__*/React.createElement("div", {
     className: "gc-sigillo"
@@ -6890,12 +6988,20 @@ function DettaglioCollaboratore({
     onClick: () => setPromemoria(true)
   }, /*#__PURE__*/React.createElement(FileText, {
     size: 15
-  }), " Proposta collaborazione"), c.stato === "candidato" && !c.nonRaccomandato && c.email && /*#__PURE__*/React.createElement("a", {
+  }), " Proposta collaborazione"), c.stato === "candidato" && !c.nonRaccomandato && c.email && /*#__PURE__*/React.createElement(BottoneInvio, {
     className: "gc-btn secondario",
-    href: mailtoProposta(c, azCand || azContr)
-  }, /*#__PURE__*/React.createElement(Send, {
-    size: 15
-  }), " Invia via email"), prossimoStato === "assunto" && /*#__PURE__*/React.createElement("button", {
+    etichetta: "Invia via email",
+    prepara: () => {
+      const az = azCand || azContr;
+      const e = propostaEmail(c, az);
+      return {
+        to: c.email || "",
+        subject: e.subject,
+        html: testoAHtml(e.body),
+        _mailto: mailtoProposta(c, az)
+      };
+    }
+  }), prossimoStato === "assunto" && /*#__PURE__*/React.createElement("button", {
     className: "gc-btn",
     onClick: () => setAssumi({
       problemi: verificaAssunzione(c, collaboratori || [])
@@ -10885,12 +10991,15 @@ function ModuloEconomia({
     onClick: scaricaCons
   }, /*#__PURE__*/React.createElement(Download, {
     size: 15
-  }), " Scarica"), consEmail ? /*#__PURE__*/React.createElement("a", {
-    className: "gc-btn",
-    href: mailtoConsulente()
-  }, /*#__PURE__*/React.createElement(Send, {
-    size: 15
-  }), " Invia al consulente") : /*#__PURE__*/React.createElement("button", {
+  }), " Scarica"), consEmail ? /*#__PURE__*/React.createElement(BottoneInvio, {
+    etichetta: "Invia al consulente",
+    prepara: () => ({
+      to: consEmail,
+      subject: "Riepilogo mensile " + meseEsteso + " — " + (azienda ? azienda.ragioneSociale : ""),
+      html: htmlConsulente(),
+      _mailto: mailtoConsulente()
+    })
+  }) : /*#__PURE__*/React.createElement("button", {
     className: "gc-btn",
     disabled: true,
     title: "Email del consulente mancante in anagrafica azienda"
