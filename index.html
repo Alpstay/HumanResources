@@ -1149,6 +1149,27 @@ button.gc-giorno:focus-visible { outline: 2px solid var(--pino); outline-offset:
 <body>
 <div id="root"></div>
 
+<!-- Firebase (Realtime Database) -->
+<script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.16.0/firebase-database-compat.js"></script>
+<script>
+  try {
+    var firebaseConfig = {
+      apiKey: "AIzaSyCUAlg3DNrAPGZ80pH6OL_8LgVTeQqv0Sc",
+      authDomain: "alpstayhumanresources.firebaseapp.com",
+      databaseURL: "INCOLLA_QUI_URL_REALTIME_DATABASE",
+      projectId: "alpstayhumanresources",
+      storageBucket: "alpstayhumanresources.firebasestorage.app",
+      messagingSenderId: "516203955015",
+      appId: "1:516203955015:web:a95834bd93749e392ec262"
+    };
+    if (typeof firebase !== "undefined" && firebaseConfig.databaseURL.indexOf("INCOLLA") === -1) {
+      firebase.initializeApp(firebaseConfig);
+      window.__db = firebase.database();
+    }
+  } catch (e) { console.warn("Firebase non inizializzato:", e); }
+</script>
+
 <script>/* React 18.2.0 — incorporato nel file, nessuna dipendenza da internet */
 /**
  * @license React
@@ -1472,13 +1493,28 @@ const STORAGE_KEY = "gestionale:aziende";
    altrimenti conserva i dati in memoria per la sessione corrente ---------- */
 const memoria = {};
 const storagePersistente = () => typeof window.storage === "object" && window.storage !== null && typeof window.storage.get === "function" && typeof window.storage.set === "function";
+const firebasePronto = () => typeof window.__db === "object" && window.__db !== null;
+const chiaveFb = k => "gestionale/" + String(k).replace(/[.#$\[\]/:]/g, "_");
 
-/* dati condivisi tra tutti i dispositivi che aprono l'app (multi-telefono in WiFi) */
+/* dati condivisi tra tutti i dispositivi che aprono l'app */
 const CONDIVISO = true;
 const archivio = {
-  persistente: storagePersistente(),
+  get persistente() {
+    return firebasePronto() || storagePersistente();
+  },
   condiviso: CONDIVISO,
+  get online() {
+    return firebasePronto();
+  },
   async get(chiave) {
+    if (firebasePronto()) {
+      const snap = await window.__db.ref(chiaveFb(chiave)).once("value");
+      if (!snap.exists()) throw new Error("Chiave non trovata");
+      return {
+        key: chiave,
+        value: snap.val()
+      };
+    }
     if (storagePersistente()) return await window.storage.get(chiave, CONDIVISO);
     if (memoria[chiave] === undefined) throw new Error("Chiave non trovata");
     return {
@@ -1487,12 +1523,30 @@ const archivio = {
     };
   },
   async set(chiave, valore) {
+    if (firebasePronto()) {
+      await window.__db.ref(chiaveFb(chiave)).set(valore);
+      return {
+        key: chiave,
+        value: valore
+      };
+    }
     if (storagePersistente()) return await window.storage.set(chiave, valore, CONDIVISO);
     memoria[chiave] = valore;
     return {
       key: chiave,
       value: valore
     };
+  },
+  /* ascolto realtime: richiama cb(valore) a ogni modifica (solo con Firebase) */
+  ascolta(chiave, cb) {
+    if (!firebasePronto()) return () => {};
+    const ref = window.__db.ref(chiaveFb(chiave));
+    const h = ref.on("value", snap => {
+      try {
+        cb(snap.exists() ? snap.val() : null);
+      } catch (e) {}
+    });
+    return () => ref.off("value", h);
   }
 };
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -12160,22 +12214,25 @@ function GestioneCollaboratori() {
           fatti: {}
         });
       }
-      /* identificativo dispositivo (locale, non condiviso) */
+      /* identificativo dispositivo (locale, per dispositivo) */
       try {
-        if (storagePersistente()) {
-          let d = null;
+        let d = null;
+        try {
+          if (typeof localStorage !== "undefined") d = localStorage.getItem("gestionale:dispositivo");
+        } catch (e) {}
+        if (!d && storagePersistente()) {
           try {
             const rr = await window.storage.get("gestionale:dispositivo", false);
             d = rr && rr.value;
           } catch (e) {}
-          if (!d) {
-            d = "disp-" + uid();
-            try {
-              await window.storage.set("gestionale:dispositivo", d, false);
-            } catch (e) {}
-          }
-          dispositivoRef.current = d;
-        } else dispositivoRef.current = "disp-" + uid();
+        }
+        if (!d) {
+          d = "disp-" + uid();
+          try {
+            if (typeof localStorage !== "undefined") localStorage.setItem("gestionale:dispositivo", d);else if (storagePersistente()) await window.storage.set("gestionale:dispositivo", d, false);
+          } catch (e) {}
+        }
+        dispositivoRef.current = d;
       } catch (e) {
         dispositivoRef.current = "disp-" + uid();
       }
@@ -12790,7 +12847,7 @@ function GestioneCollaboratori() {
     className: "gc-banner-errore"
   }, errore), !archivio.persistente && caricato && /*#__PURE__*/React.createElement("div", {
     className: "gc-banner-info"
-  }, "File aperto fuori dall'ambiente Claude: i dati inseriti restano disponibili solo finché questa pagina rimane aperta."), !caricato ? /*#__PURE__*/React.createElement("div", {
+  }, "Database non collegato: i dati inseriti restano solo finché questa pagina resta aperta. Verifica la configurazione Firebase (databaseURL) e le regole del database."), !caricato ? /*#__PURE__*/React.createElement("div", {
     className: "gc-caricamento"
   }, "Caricamento in corso…") : modulo === "aziende" ? vista.pagina === "modulo" ? /*#__PURE__*/React.createElement(ModuloAzienda, {
     iniziale: corrente || nuovaAzienda(),
